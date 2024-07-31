@@ -1,43 +1,74 @@
 services:
-  postgres:
+  postgres-server:
     image: postgres:latest
-    container_name: ${DB_SERVER_HOST}
+    container_name: postgres-server
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+    networks:
+      zabbix-net:
+        ipv4_address: 172.20.240.2
+    restart: unless-stopped
 
-  zabbix-server:
-    build: .
-    container_name: ${ZBX_SERVER_HOST}
+  zabbix-snmptraps:
+    image: zabbix/zabbix-snmptraps:alpine-7.0-latest
+    container_name: zabbix-snmptraps
+    volumes:
+      - /zbx_instance/snmptraps:/var/lib/zabbix/snmptraps:rw
+      - /var/lib/zabbix/mibs:/usr/share/snmp/mibs:ro
+    ports:
+      - "162:1162/udp"
+    networks:
+      zabbix-net:
+        ipv4_address: 172.20.240.3
+    restart: unless-stopped
+
+  zabbix-server-pgsql:
+    image: zabbix/zabbix-server-pgsql:alpine-7.0-latest
+    container_name: zabbix-server-pgsql
     environment:
-      DB_SERVER_HOST: ${DB_SERVER_HOST}
-      DB_SERVER_PORT: ${DB_SERVER_PORT}
+      DB_SERVER_HOST: postgres-server
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    depends_on:
-      - postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      ZBX_ENABLE_SNMP_TRAPS: "true"
     ports:
       - "10051:10051"
+    depends_on:
+      - postgres-server
+    networks:
+      zabbix-net:
+        ipv4_address: 172.20.240.4
+    volumes_from:
+      - zabbix-snmptraps
+    restart: unless-stopped
 
-  zabbix-web:
-    image: zabbix/zabbix-web-nginx-pgsql:tag
-    container_name: some-zabbix-web
+  zabbix-web-nginx-pgsql:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest
+    container_name: zabbix-web-nginx-pgsql
     environment:
-      DB_SERVER_HOST: ${DB_SERVER_HOST}
-      DB_SERVER_PORT: ${DB_SERVER_PORT}
+      ZBX_SERVER_HOST: zabbix-server-pgsql
+      DB_SERVER_HOST: postgres-server
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      ZBX_SERVER_HOST: ${ZBX_SERVER_HOST}
-    depends_on:
-      - zabbix-server
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "8080:8080"
+      - "443:8443"
+      - "8081:8080"
     volumes:
-      - webdata:/usr/share/nginx/html:ro
+      - /etc/ssl/nginx:/etc/ssl/nginx:ro
+    depends_on:
+      - zabbix-server-pgsql
+    networks:
+      zabbix-net:
+        ipv4_address: 172.20.240.5
+    restart: unless-stopped
 
-volumes:
-  pgdata:
-  webdata:
+networks:
+  zabbix-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          ip_range: 172.20.240.0/20
